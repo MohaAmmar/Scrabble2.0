@@ -20,8 +20,7 @@ let spawnMultiples name dict bot =
 let main argv =
     ScrabbleUtil.DebugPrint.toggleDebugPrint false // Change to false to supress debug output
 
-    System.Console.BackgroundColor <- System.ConsoleColor.White
-    System.Console.ForegroundColor <- System.ConsoleColor.Black
+    System.Console.ResetColor()
     System.Console.Clear()
 
     let board        = ScrabbleUtil.StandardBoard.standardBoard ()
@@ -44,16 +43,13 @@ let main argv =
     let port       = 13001
 
     let dictAPI =
-        // Uncomment if you have implemented a dictionary. last element None if you have not implemented a GADDAG
-        // Some (Dictionary.empty, Dictionary.insert, Dictionary.step, Some Dictionary.reverse) 
-        None
-        
-    // Uncomment this line to call your client
-    // let players    = [("Your name here", YourClientName.Scrabble.startGame)]
+        Some (YourClientName.Dictionary.empty, YourClientName.Dictionary.insert, YourClientName.Dictionary.step, None) 
+     
     let (dictionary, time) =
         time (fun () -> ScrabbleUtil.Dictionary.mkDict words dictAPI)
 
-    let players = spawnMultiples "OxyphenButazone" dictionary Oxyphenbutazone.Scrabble.startGame 2
+    let players    = [("Kiwi", dictionary , YourClientName.Scrabble.startGame)]
+    //let players = spawnMultiples "OxyphenButazone" dictionary Oxyphenbutazone.Scrabble.startGame 2
 
 
     do ScrabbleServer.Comm.startGame 
