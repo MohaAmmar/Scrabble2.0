@@ -47,17 +47,15 @@ module State =
         dict          : ScrabbleUtil.Dictionary.Dict
         playerNumber  : uint32
         hand          : MultiSet.MultiSet<uint32>
-        bag           : uint32
         boardTiles    : Map<coord, char>
     }
 
-    let mkState b d pn h bag bt = {board = b; dict = d;  playerNumber = pn; hand = h; bag = bag ; boardTiles = bt }
+    let mkState b d pn h bt = {board = b; dict = d;  playerNumber = pn; hand = h; boardTiles = bt }
 
     let board st         = st.board
     let dict st          = st.dict
     let playerNumber st  = st.playerNumber
     let hand st          = st.hand
-    let bag st = st.bag    
     let boardTile st = st.boardTiles
 
         
@@ -70,38 +68,38 @@ module Move =
     
     let isBoardEmpty (st: State.state) = Map.count st.boardTiles = 0
 
-    let findWords (st:State.state) (letterId:uint32) (co: coord) (pieces : pieces) = //the cords might be oof
+    let findWords (st: State.state) (id: uint32) (co: coord) (pieces : pieces) =
         let mutable updatedDict = st.dict
-        let rec aux (dict: Dictionary.Dict) (hand: MultiSet.MultiSet<uint32>) (letters: (coord * letter) list ) (words: word list) =
-            //look through hand and add to list of words if we find a word
+        let rec aux
+            (dict: Dictionary.Dict)
+            (hand: MultiSet.MultiSet<uint32>)
+            (ids: List<uint32 * char>)
+            (foundWords: List<List<uint32 * char> * coord>)
+            =
             MultiSet.fold
-                (fun word id v ->
+                (fun fw id v ->
                     Set.fold (fun _ (c,_) -> 
                         match Dictionary.step c dict with
-                        | None -> word
-                        | Some (true, newDict) ->
-                            updatedDict <- newDict
-                            aux dict (MultiSet.removeSingle id hand) (letters @ [ co, (id, c) ]) ((((letters) @ [(co,(id, c)) ])) :: word) 
-                        | Some (false, newDict) ->
-                            updatedDict <- newDict
-                            aux dict (MultiSet.removeSingle id hand) (letters @ [ co, (id, c) ]) word
-                    ) words (Map.find id pieces)
+                        | None -> fw
+                        | Some (true, dict) ->
+                            updatedDict <- dict
+                            aux dict (MultiSet.removeSingle id hand) (ids @ [ (id, c) ]) (((ids @ [ (id, c) ]),(co)) :: fw) 
+                        | Some (false, dict) ->
+                            updatedDict <- dict
+                            aux dict (MultiSet.removeSingle id hand) (ids @ [ (id, c) ]) fw
+                    ) foundWords (Map.find id pieces) 
                 )
-                words
+                foundWords
                 hand
 
-        aux updatedDict (MultiSet.removeSingle letterId st.hand) list.Empty 
-    
-    let goThroughHand (st : State.state) (c: coord) (pieces : Map<uint32,Set<char*int>>) =
-        MultiSet.fold (fun acc id _ -> acc @ (findWords st id c pieces [])) List.Empty st.hand
-        
+        aux updatedDict (st.hand) list.Empty list.Empty 
+   
     let isTileOccupied (c: coord) (st: State.state) =
         match st.boardTiles.TryFind c with
         | Some v    -> Some v
         | None      -> None
         
-        
-    let checkReservedCoordPlacement (w : letter list) (gcCoords : coord) (givenTile : letter) (st : State.state) : StateMonad.Result<'a, word>  = 
+    let findCoordsForWord (w : letter list) (gcCoords : coord) (givenTile : letter) (st : State.state) : StateMonad.Result<'a, word>  = 
         let gtX, gtY = gcCoords
         let givenTileChar = (snd givenTile)
         let positionInWord = List.findIndex (fun x -> givenTileChar = (snd x) ) w
@@ -109,14 +107,14 @@ module Move =
         let wordListBeforeGC    = w[0..positionInWord-1]
         let wordListAfterGC     = w[positionInWord+1..]
         
-        let h1 = (isTileOccupied (gtX-1, gtY) st).IsNone
-        let h2 = (isTileOccupied (gtX+1, gtY) st).IsNone
+        let left = (isTileOccupied (gtX-1, gtY) st).IsNone
+        let right = (isTileOccupied (gtX+1, gtY) st).IsNone
         
-        let v1 = (isTileOccupied (gtX, gtY-1) st).IsNone
-        let v2 = (isTileOccupied (gtX, gtY+1) st).IsNone
+        let up = (isTileOccupied (gtX, gtY-1) st).IsNone
+        let down = (isTileOccupied (gtX, gtY+1) st).IsNone
         
-        let horizontal = (h1&&h2)
-        let vertical = (v1&&v2)
+        let horizontal = (left&&right)
+        let vertical = (up&&down)
         
         match (horizontal) with
         | true ->
@@ -125,19 +123,20 @@ module Move =
             let wordListAfterGC_Coordinates = List.mapi (fun i e ->(((gtX+i+1), gtY), e)) wordListAfterGC
             printfn $"List before given coordinate {wordListBeforeGC_Coordinates} and after {wordListAfterGC_Coordinates}"
 
-            let wl = wordListBeforeGC_Coordinates@wordListAfterGC_Coordinates
+            let (word:word) = wordListBeforeGC_Coordinates@wordListAfterGC_Coordinates
             
-            let b = List.fold (fun acc e ->
+            let isAnyTilesDisturbing = List.fold (fun acc e ->
                 match acc with
                 | Some v ->
                     printfn $"The tile before {e} is reserved by another tile."
                     acc
-                | None -> (isTileOccupied (fst e) st)) None wl
-            match b with
+                | None -> (isTileOccupied (fst e) st)) None word //up down 
+            
+            match isAnyTilesDisturbing with
             | None ->
-                printfn $"The word {wl} can be placed on board."
-                StateMonad.Success wl
-            | _     -> StateMonad.Failure wl
+                printfn $"The word {word} can be placed on board."
+                StateMonad.Success word
+            | _     -> StateMonad.Failure word
             
         | false ->
             match (vertical) with
@@ -149,13 +148,13 @@ module Move =
                 
                 let wl = wordListBeforeGC_Coordinates@wordListAfterGC_Coordinates
                 
-                let b = List.fold (fun acc e ->
+                let isAnyTilesDisturbing = List.fold (fun acc e ->
                     match acc with
                     | Some v ->
                         printfn $"The tile before {e} is reserved by another tile."
                         acc
-                    | None -> (isTileOccupied (fst e) st)) None wl
-                match b with
+                    | None -> (isTileOccupied (fst e) st)) None wl //left right 
+                match isAnyTilesDisturbing with
                 | None ->
                     printfn $"The word {wl} can be placed on board."
                     StateMonad.Success wl
@@ -163,47 +162,66 @@ module Move =
             | false ->
                 printfn $"failed"
                 StateMonad.Failure [] //Not possible to plave the word
+    
         
-    let isPlaceable = true
-
     
-    
-    (*let selectFoundWord (st: State.state) (foundWords:word list)=
-        debugPrint(sprintf " selectFoundWord with " + string (List.length foundWords))
-        if (List.length foundWords = 0) then 
-            List.empty, ((0,0)) //do something else?
-        else 
-            //check to only place word that does not touch other words
-            let lst = List.filter (fun fw -> isPlaceable st fw) foundWords
-            debugPrint(sprintf "Placeable words: " + (string (List.length lst)))
-            if (List.length lst = 0) then List.empty, ((0,0))
-            else 
-                List.sortByDescending (fun (fw,(c,d)) -> List.length fw) lst
-                |> List.head*)
+    let selectFoundWord (st: State.state) (foundWords:word list)=
+       ()// List.fold (fun w ->  ) [] foundWords
     
     let changeTiles (st : State.state) = //if vildcard -> change tiles
         printfn $"Changing tiles"
         let hand = MultiSet.toList st.hand
-        if st.bag > 2u
+        if st.boardTiles.Count < 90
         then hand[0..2] 
         else hand[0..0]  
+   
     
-    let changeWildCard (st : State.state) =
-        let hand = MultiSet.toList st.hand
-        hand[0..0]
+    let firstMove (id:uint32) (co:coord) (pieces:pieces) (st:State.state) =
+        let rec aux di hand word (foundWords: ((uint32 * char) list) list) =
+            MultiSet.fold
+                  (fun acc id _ ->
+                        Set.fold( fun _ (c,_) ->
+                            match Dictionary.step c di  with
+                            | None -> acc
+                            | Some(true,di) ->
+                               
+                                aux di (MultiSet.removeSingle id hand) (word @ [(id,c)]) ((word @ [(id,c)]) :: foundWords)
+                            | Some(false,di) ->
+                                
+                                aux di (MultiSet.removeSingle id hand) (word @ [(id,c)]) foundWords
+                        ) foundWords (Map.find id pieces)
+                        
+                    
+                )foundWords hand
+        
+        let di =
+            if (st.boardTiles.Count = 0)
+            then
+                match (Dictionary.step (fst (Set.minElement (Map.find id pieces))) st.dict) with
+                | None -> st.dict //Do we ever get here?
+                | Some (_, d) -> d
+            else
+                match (Dictionary.step (Map.find co st.boardTiles) st.dict) with
+                | None -> st.dict //Do we ever get here?
+                | Some (_, d) -> d
+        
+        aux di st.hand [] []
+        
+    let otherMove : (coord * (uint32 * (char * int))) list = []
     
+    let goThroughHand (st : State.state) (c: coord) (pieces : pieces) =
+        MultiSet.fold (fun acc id _ -> acc @ (findWords st id c pieces)) List.Empty st.hand
+    
+    
+    //find the best word to play on the bord. if no words found then return a empty list, such that we know when to exchange
     let makeMove (st: State.state) (pieces : pieces) =
-        if isBoardEmpty st
-        then goThroughHand st (0, 0) pieces    
-        else 
-            
-            let fw = [] //Map.fold (fun acc k v -> acc @ findWords st (fst (Map.find k st.placedTiles)) k (snd v)) List.empty placements |> State2.selectFoundWord st
-            if (List.length fw = 0)
-            then 
-                debugPrint (sprintf " no found words - changing tiles ")
-                List.empty
-            else 
-                []//makeMovePlayeble fw
+        let l = goThroughHand(st)
+        match isBoardEmpty st with
+        | true ->
+            //(l (0,0) pieces)[0] |> List.iter (fun x -> printf "%d " x)
+            printfn $"Heh? {(l (0,0) pieces)[0]}"
+            []
+        | false -> [] //otherMove
         
         
 
@@ -239,10 +257,9 @@ module Scrabble =
                 let handWithoutPlayedTiles = MultiSet.subtract st.hand playedTiles
                 
                 let newHand = List.fold (fun acc (a, times) -> MultiSet.add a times acc) handWithoutPlayedTiles newPieces
-                let newBag = st.bag - uint32(List.length newPieces)
                 let newBT = Map.fold (fun acc k v -> Map.add k v acc ) st.boardTiles (movedTileOnBoard ms)
                 
-                let st' = State.mkState st.board st.dict st.playerNumber newHand newBag newBT   
+                let st' = State.mkState st.board st.dict st.playerNumber newHand newBT   
                 aux st'
                 
             | RCM (CMChangeSuccess(newPieces)) ->
@@ -250,7 +267,7 @@ module Scrabble =
                 let handWithoutPlayedTiles = MultiSet.subtract st.hand playedTiles 
                 let newHand = List.fold (fun acc (a, times) -> MultiSet.add a times acc) handWithoutPlayedTiles newPieces
                 
-                let st' = State.mkState st.board st.dict st.playerNumber newHand st.bag  st.boardTiles 
+                let st' = State.mkState st.board st.dict st.playerNumber newHand st.boardTiles 
                 aux st'
                 
             | RCM (CMPlayed (pid, ms, points)) -> // not relevant : since we do not offer multiplayer
@@ -291,5 +308,5 @@ module Scrabble =
                   
         let handSet = List.fold (fun acc (x, k) -> MultiSet.add x k acc) MultiSet.empty hand
 
-        fun () -> playGame cstream tiles (State.mkState board dict playerNumber handSet 91u Map.empty)
+        fun () -> playGame cstream tiles (State.mkState board dict playerNumber handSet Map.empty)
         
